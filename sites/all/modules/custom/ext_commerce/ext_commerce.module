@@ -1,0 +1,615 @@
+<?php
+
+
+/**
+ * Implements hook_commerce_checkout_pane_info()
+ */
+function ext_commerce_commerce_checkout_pane_info()
+{
+  return [
+    'checkout_services' => [
+      'title' => t('Services'),
+      'page' => 'checkout',
+      'weight' => 0,
+      'file' => 'includes/checkout_services.checkout_pane.inc',
+      'base' => 'checkout_services_pane',
+    ],
+    'checkout_address' => [
+      'title' => t('Delivery address'),
+      'page' => 'checkout',
+      'weight' => 0,
+      'file' => 'includes/checkout_address.checkout_pane.inc',
+      'base' => 'checkout_address_pane',
+    ],
+  ];
+}
+
+/**
+ * hook_module_implements_alter()
+ * change hook execution order
+ */
+function ext_commerce_module_implements_alter(&$implementations, $hook)
+{
+//  if (in_array($hook, ['form_commerce_checkout_form_checkout_alter'])) {
+//    // ext_checkout - last
+//    $module = 'ext_checkout';
+//    if (isset($implementations[$module])) {
+//      $group = $implementations[$module];
+//      unset($implementations[$module]);
+//      $implementations[$module] = $group;
+//    }
+//  }
+
+//  if ($hook == 'commerce_order_presave') {
+//    // ext_checkout - first
+//    $module = 'ext_checkout';
+//    $group = array($module => $implementations[$module]);
+//    unset($implementations[$module]);
+//    $implementations = $group + $implementations;
+//  }
+}
+
+
+/**
+ * Implements hook_form_alter
+ */
+function ext_commerce_form_alter(&$form, &$form_state, $form_id)
+{
+  // --------------------------------- Изменение формы добавления в корзину
+  // e.g form id: commerce_cart_add_to_cart_form_u6onPJSgS7pOgw0Tlo7zHy42LTQzbV913taANkYQKTo
+  if (strpos($form_id, 'commerce_cart_add_to_cart_form') !== FALSE) {
+    ext_commerce_form_commerce_add_to_cart_form_alter($form, $form_state);
+  }
+
+  switch($form_id) {
+
+    case 'product_agro_node_form':
+      // отключить возможность ввода цены для варианта товара
+      // цена расчитывается автоматически от цены за шт.
+      if (isset($form['field_product']['und']['entities'])) {
+        foreach ($form['field_product']['und']['entities'] as $key_e => $entity) {
+          if (is_numeric($key_e) && !empty($entity['form']['commerce_price'])) {
+            $form['field_product']['und']['entities'][$key_e]['form']['commerce_price']['#access'] = false;
+          }
+        }
+      }
+      if (!empty($form['field_product']['und']['form']['commerce_price'])) {
+        $form['field_product']['und']['form']['commerce_price']['#access'] = false;
+        $form['field_product']['und']['form']['commerce_price']['und'][0]['amount']['#type'] = 'value';
+        $form['field_product']['und']['form']['commerce_price']['und'][0]['amount']['#default_value'] = '0';
+        $form['field_product']['und']['form']['commerce_price']['und'][0]['currency_code']['#type'] = 'value';
+        $form['field_product']['und']['form']['commerce_price']['und'][0]['currency_code']['#default_value'] = 'RUB';
+      }
+      // пересчитать цены вариантов товаров в админке при редактировании товара
+      $form['#submit'][] = 'ext_commerce_product_calc_price';
+      break;
+  }
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter()
+ * изменение форма добавления в корзину
+ */
+function ext_commerce_form_commerce_add_to_cart_form_alter(&$form, &$form_state)
+{
+  $form['submit']['#value'] = 'В корзину';
+  $form['submit']['#attributes']['class'][] = 'btn-primary';
+  $form['submit']['#attributes']['class'][] = 'btn-lg';
+  $form['submit']['#attributes']['class'][] = 'btn-wide';
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ * форма оформления заказа
+ */
+function ext_commerce_form_commerce_checkout_form_checkout_alter(&$form, &$form_state)
+{
+  $order_info = ext_commerce_get_order_info(commerce_cart_order_id($GLOBALS['user']->uid));
+
+  $form['#prefix'] = '<div id="commerce-checkout-ajax-wrapper">';
+  $form['#suffix'] = '</div>';
+  $form['#attributes']['class'][] = 'commerce-checkout-form-checkout';
+
+  if ($order_info['products']['qty_products']) {
+
+    $form['#attached']['js'][] = drupal_get_path('module', 'ext_commerce') . '/ext_commerce.js';
+
+    // todo нужно отключить автозаполнение в форме
+    // но браузеры игнорируют эту настройку
+    $form['#attributes']['autocomplete'] = 'off';
+
+    $form['wrapper-prefix'] = [
+      '#markup' => '<div class="c-1">',
+      '#weight' => -10,
+    ];
+
+    // Корзина -------------------------------------------------------------------
+    if (isset($form["cart_contents_form"])) {
+      $cart_form = &$form["cart_contents_form"]["cart_contents_form_view"];
+
+      $cart_form['title'] = [
+        '#markup' => '<h2>Корзина</h2>',
+        '#weight' => -10,
+      ];
+
+      // добавить кнопки +/- товарам в корзине
+      //   работает на базе модуля Commerce Extra Quantity
+      $form['#attached']['js'][] = drupal_get_path('module', 'commerce_extra_quantity') . '/commerce_extra_quantity.js';
+      $form['#attached']['css'][] = drupal_get_path('module', 'commerce_extra_quantity') . '/commerce_extra_quantity.css';
+      foreach ($cart_form["edit_quantity"] as $key => $value) {
+        if (is_numeric($key) && drupal_substr($key, 0, 1) != '#' && is_array($value)) {
+          $cart_form["edit_quantity"][$key]['#theme_wrappers'] = [
+            'quantity_plusminus_wrapper',
+            'form_element'
+          ];
+          $cart_form["edit_quantity"][$key]['#limit_down'] = 1;
+          $cart_form['edit_quantity'][$key]['#ajax'] = [
+            'callback' => '',
+            'wrapper' => 'commerce-checkout-ajax-wrapper',
+            'event' => 'quantityChanged',
+            'progress' => 'none',
+            'trigger_as' => [
+              'name' => 'update-cart',
+            ]
+          ];
+
+        }
+      }
+      $form['#validate'][] = 'ext_checkout_quantity_validate_cardinality';
+
+      // вытащить из блока корзины блок с Cообщениями
+      if (!empty($form["cart_contents_form"]["cart_contents_form_messages"])) {
+        $form["messages"] = $form["cart_contents_form"]["cart_contents_form_messages"];
+        unset($form["cart_contents_form"]["cart_contents_form_messages"]);
+      }
+
+      // иконки вместо Удалить
+      foreach ($cart_form["edit_delete"] as $key => &$item) {
+        if (isset($item['#value'])) {
+          $item['#value'] = _bootstrap_icon('trash');
+          $item['#ajax'] = [
+            'callback' => 'ext_checkout_commerce_checkout_form_refresh',
+            'wrapper' => 'commerce-checkout-ajax-wrapper',
+          ];
+        }
+      }
+
+      // ajax на кнопки
+      $cart_form['actions']['submit']['#name'] = 'update-cart';
+      $cart_form["actions"]["submit"]['#ajax']['callback'] = 'ext_checkout_commerce_checkout_form_refresh';
+      $cart_form["actions"]["submit"]['#ajax']['wrapper'] = 'commerce-checkout-ajax-wrapper';
+
+      // Модуль commerce_cart_form_checkout_pane, добавляющий корзину в чекаут,
+      // не использует стандартные submit из commerce_cart и непосредственно обновляет line_items при изменении количества
+      // без сохранения заказа в целом. Из-за этого не выполняется пересчёт итоговой суммы в заказе.
+      // Добавим стандартный submit
+      $cart_form["actions"]["submit"]["#submit"][] = 'commerce_cart_line_item_views_form_submit';
+    }
+
+
+    // Дополнительные услуги -----------------------------------------------------
+
+
+    // Доставка ------------------------------------------------------------------
+    if (isset($form["customer_profile_billing"])) {
+      $form['content']["customer_profile_billing"] = $form["customer_profile_billing"];
+      unset($form["customer_profile_billing"]);
+    }
+
+    // Оплата --------------------------------------------------------------------
+    if (isset($form["commerce_payment"])) {
+      $form["commerce_payment"]['title'] = [
+        '#markup' => '<h2>Оплата</h2>',
+        '#weight' => -10,
+      ];
+      $form['commerce_payment']['payment_method']['#after_build'][] = 'ext_commerce_payment_radios_alter';
+      $form['commerce_payment']['payment_method']['#ajax']['callback'] = 'ext_checkout_commerce_checkout_form_refresh';
+      $form['commerce_payment']['payment_method']['#ajax']['wrapper'] = 'commerce-checkout-ajax-wrapper';
+
+    }
+
+    $form['wrapper-suffix'] = [
+      '#markup' => '</div>',
+      '#weight' => 99,
+    ];
+
+    // Блок итого ----------------------------------------------------------------
+    $form['summary'] = [
+      '#type' => 'container',
+      '#attributes' => ['class' => ['c-2']],
+      '#weight' => 100,
+    ];
+    $form['summary']['info'] = [
+      '#markup' => '<div class="checkout-summary">' .
+        '<div class="cs-total"><span>Итого</span><span>' . $order_info['total']['formatted'] . '</span></div>' .
+        '<div class="cs-amount"><span>Товары, ' . $order_info['products']['qty_pcs'] . ' шт.</span><span>' . $order_info['amount']['formatted'] . '</span></div>' .
+        '<div class="cs-discount"><span>Скидка</span><span>' . $order_info['discount']['formatted'] . '</span></div>' .
+        '<div class="cs-weight"><span>Вес</span><span>' . $order_info['weight'] . ' кг.</span></div>' .
+        '</div>',
+      '#weight' => 1,
+    ];
+
+    unset($form["buttons"]["back"]);
+    unset($form["buttons"]["cancel"]);
+    $form["buttons"]["#type"] = 'container';
+    $form["buttons"]["#weight"] = 2;
+    $form["buttons"]["continue"]["#value"] = 'Оформить заказ';
+    $form["buttons"]["continue"]["#attributes"]["class"][] = 'btn-primary';
+    $form["buttons"]["continue"]["#attributes"]["class"][] = 'btn-wide';
+    $form["buttons"]["continue"]["#attributes"]["class"][] = 'btn-lg';
+    $form['summary']['buttons'] = $form["buttons"];
+    unset($form["buttons"]);
+
+    $form['summary']['policy'] = [
+      '#markup' => '<div class="checkout-policy"><p>Согласен с условиями <a href="/">Правил пользования торговой площадкой и правилами возврата</a></p></div>',
+      '#weight' => 3,
+    ];
+
+  } else {
+    $form = [
+      'empty' => [
+        '#markup' => '<p>Корзина пуста, <a href="/">выбрать товары</a></p>',
+      ],
+    ];
+  }
+}
+
+function ext_checkout_commerce_checkout_form_refresh($form, $form_state)
+{
+  return $form;
+}
+
+/**
+ * Validation callback for checking cardinality.
+ */
+function ext_checkout_quantity_validate_cardinality(&$form, &$form_state)
+{
+  // Figure out quantity level(s)
+  $quantities = $form_state["values"]["cart_contents_form"]["cart_contents_form_view"]["edit_quantity"];
+
+  // Validate each quantity
+  $quantity_cardinality = variable_get('commerce_extra_quantity_cardinality', 1);
+  foreach ($quantities as $key => $quantity) {
+    if (($quantity % $quantity_cardinality)) {
+      // Quantity is not divisible by quantity cardinality
+      form_set_error('', t('Incorrect quantity level.'));
+      watchdog('commerce_extra_quantity', 'Tried to submit a form with incorrect quantity level @quantity when having quantity cardinality of @quantity_cardinality', array(
+        '@quantity' => $quantity,
+        '@quantity_cardinality' => $quantity_cardinality
+      ), WATCHDOG_ERROR);
+    }
+  }
+}
+
+/**
+ * Processing Radios Element using #after_build property.
+ * Adding the 'active' class attribute for selected item in checkout_shipping
+ */
+function ext_commerce_payment_radios_alter($element, $form_state) {
+  if ($form_state['values']['commerce_payment']['payment_method']) {
+    $radios_value = $form_state['values']['commerce_payment']['payment_method'];
+    if (isset($element[$radios_value])) {
+      $element[$radios_value]['#wrapper_attributes']['class'][] = 'active';
+    } else {
+      $element[$element['#default_value']]['#wrapper_attributes']['class'][] = 'active';
+    }
+
+  }
+  return $element;
+}
+
+/**
+ * пересчитать цены вариантов товаров в админке при редактировании дисплее товара, если цена за единицу изменилась
+ * TODO: цена не пересчитывается при сохранении сразу после изменения поля Количество, только после повторного сохр.
+ */
+function ext_commerce_product_calc_price($form, &$form_state)
+{
+  if (isset($form['field_pd_price_per_unit'])) {
+    $price_per_unit = (float) $form_state['values']['field_pd_price_per_unit']['und'][0]['value'];
+
+    foreach ($form_state['inline_entity_form'] as $inline_form) {
+      foreach ($inline_form['entities'] as $key => $line_item) {
+        $qty = (float) $line_item['entity']->field_p_qty['und'][0]['value'];
+
+        $commerce_price_amount_new = $qty * $price_per_unit * 100;
+        $line_item['entity']->commerce_price['und'][0]['amount'] = $commerce_price_amount_new;
+      }
+    }
+  }
+}
+
+/**
+ * ------------ Вспомогательные функции ----------------------------------------
+ */
+/**
+ * извлечь и оформить полную информацию о заказе
+ */
+function ext_commerce_get_order_info($order)
+{
+  $result = drupal_static(__FUNCTION__);
+  if (empty($result)) {
+    $order_wr = entity_metadata_wrapper('commerce_order', $order);
+
+    if (!$order_wr->value()) {
+      return FALSE;
+    }
+    // товары
+    $product_count = $product_pcs_count = 0;
+
+    // weight
+    $weight = commerce_physical_order_weight($order, 'kg')['weight'];
+
+    // доставка
+    $line_items = [];
+    $shipping = [];
+    foreach ($order_wr->commerce_line_items as $item_wr) {
+      if ($item_wr->value()) {
+        if ($item_wr->getBundle() == 'shipping') {
+          if (!empty($order_wr->value()->commerce_customer_shipping)) {
+            $shipping_profile_wr = $order_wr->commerce_customer_shipping;
+
+            $shipping_method = $item_wr->commerce_shipping_service->value();
+
+            // если есть данные, помимо стандартных
+            $function = $shipping_method . '_info';
+            if (function_exists($function)) {
+              $shipping = $function($item_wr->value(), $shipping_profile_wr->value());
+            }
+            if (!$shipping) {
+              $shipping = [
+                'title' => t($item_wr->line_item_label->value()),
+                'method' => $item_wr->commerce_shipping_service->value(),
+              ];
+            }
+
+            $shipping['cost'] = $item_wr->commerce_total->amount->value() / 100;
+            $shipping['cost_formatted'] = commerce_currency_format($item_wr->commerce_total->amount->value() / 100, $item_wr->commerce_total->currency_code->value(), NULL, FALSE);
+
+            if (empty($shipping['address'])) {
+              $shipping['address'] = ($shipping_profile_wr->field_zipcode->value() ? $shipping_profile_wr->field_zipcode->value() . ', ' : '')
+                . ($shipping_profile_wr->field_city->value() ? $shipping_profile_wr->field_city->value() : '')
+                . ($shipping_profile_wr->field_addr->value() ? ', ' . $shipping_profile_wr->field_addr->value() : '')
+                . ($shipping_profile_wr->field_office->value() ? ' - ' . $shipping_profile_wr->field_office->value() : '');
+            }
+            $shipping['callme'] = $shipping_profile_wr->field_callme->value();
+            $shipping['passport'] = $shipping_profile_wr->field_passport->value();
+            $shipping['parcel_number'] = '';
+            if (!empty($shipping_profile_wr->value()->field_parcel_number['und'])) {
+              $shipping['parcel_number'] = $shipping_profile_wr->field_parcel_number->value();
+            }
+            if (!empty($shipping_profile_wr->value()->field_parcel_photo['und'])) {
+              $shipping['parcel_photo_url'] = file_create_url($shipping_profile_wr->field_parcel_photo->file->value()->uri);
+            }
+          }
+        }
+        elseif (in_array($item_wr->getBundle(), commerce_product_line_item_types())) {
+
+          $line_item_info = ext_commerce_get_line_item_info($item_wr->value());
+          $line_items[] = $line_item_info;
+
+          // add tare weight
+          $weight += $line_item_info['product_info']['tare_weight_arr']['weight'];
+
+          // общее количество товаров в шт.
+          $product_pcs_count += $line_item_info['qty'];
+
+          $product_count++;
+        }
+      }
+    }
+
+    $product_count_text = format_plural($product_count, '@count item', '@count items', [], ['context' => 'product count on a Commerce order']);
+
+    // оплата
+    $balance = $order_wr->commerce_order_total->amount->value();
+    $payment_title = $payment_method = $payment_addon = '';
+    $payment_before_shipping = $is_online = FALSE;
+    if (!empty($order_wr->value()->data['payment_method'])) {
+      $payment_method = $order_wr->value()->data['payment_method'];
+
+      // проверить транзакции в поиске успешной
+      foreach (commerce_payment_transaction_load_multiple([], ['order_id' => $order->order_id]) as $transaction) {
+        if ($transaction->status == 'success') {
+          $payment_method = $transaction->instance_id;
+        }
+      }
+
+      switch ($payment_method) {
+      }
+
+      // проверка оплаты
+      if ($balance = commerce_payment_order_balance($order_wr->value())) {
+        $balance = $balance['amount'];
+      }
+    }
+
+    // купоны
+//    $coupons = [];
+//    foreach ($order_wr->commerce_coupons->getIterator() as $coupon_wr) {
+//      //      $coupon = $coupon_wr->value();
+//      $coupons[] = [
+//        'type' => $coupon_wr->type->value(),
+//        'code' => $coupon_wr->code->value(),
+//      ];
+//    }
+
+    // инфо о пользователе
+//    $user_phone = empty($order_wr->field_phone->value()) ? '' : $order_wr->field_phone->value();
+    $user_name = $GLOBALS['user']->name;
+
+    // компоненты итоговой цены (скидки и прочее)
+    $components = [];
+    $component_titles = commerce_price_component_titles();
+    foreach ($order_wr->commerce_order_total->data->value()['components'] as $component) {
+      if ($component['included']) {
+        $title = isset($component_titles[$component['name']]) ? $component_titles[$component['name']] : '';
+        if (!$title && !empty($component['price']['data']['discount_component_title'])) {
+          $title = $component['price']['data']['discount_component_title'];
+        }
+
+        $components[$component['name']] = [
+          'title' => $title,
+          'amount' => $component['price']['amount'],
+        ];
+      }
+    }
+
+
+    $result = [
+      'order' => $order_wr->value(),
+      'id' => $order_wr->order_id->value(),
+      'number' => $order_wr->order_number->value(),
+      'url' => $GLOBALS['base_root'] . '/user/' . $order_wr->uid->value() . '/orders/' . $order_wr->order_id->value(),
+      'placed' => $order_wr->placed->value(),
+      'status' => $order_wr->status->value(),
+      'user' => [
+        'uid' => $order_wr->uid->value(),
+        'mail' => $order_wr->mail->value(),
+        'name' => $user_name,
+//        'phone' => $user_phone,
+//        'phone_formatted' => ext_user_format_phone($user_phone),
+      ],
+      'products' => [
+        'qty_products' => $product_count,
+        'qty_pcs' => $product_pcs_count,
+        'items' => $line_items,
+      ],
+      'shipping' => $shipping,
+//      'payment' => [
+//        'title' => $payment_title,
+//        'method' => $payment_method,
+//        'before_shipping' => $payment_before_shipping,
+//        'is_online' => $is_online,
+//        'balance' => $balance, // неоплаченный остаток (или вся сумма)
+//        'balance_formatted' => commerce_currency_format($balance, 'RUB'),
+//        'paid_formatted' => commerce_currency_format($order_wr->commerce_order_total->amount->value() - $balance, 'RUB'),
+//        'addon' => $payment_addon,
+//      ],
+      'weight' => $weight,
+      'amount' => [
+        'amount' => $order_wr->commerce_order_total->amount->value(),
+        'formatted' => str_replace(',00', '', commerce_currency_format($order_wr->commerce_order_total->amount->value(), 'RUB')),
+      ],
+      'discount' => [
+        'amount' => 0,
+        'formatted' => str_replace(',00', '', commerce_currency_format(0, 'RUB')),
+      ],
+      // todo Итого с учётом скидок
+      'total' => [
+        'components' => $components,
+        'amount' => $order_wr->commerce_order_total->amount->value(),
+        'formatted' => str_replace(',00', '', commerce_currency_format($order_wr->commerce_order_total->amount->value(), 'RUB')),
+      ],
+    ];
+  }
+
+  return $result;
+}
+
+
+function ext_commerce_product_get_info($product)
+{
+  $result = drupal_static(__FUNCTION__);
+  if (empty($result)) {
+    $product_wr = entity_metadata_wrapper('commerce_product', $product);
+    $pid = $product_wr->product_id->value();
+    $node = ext_commerce_get_product_display_by_product_id($pid, TRUE);
+    $node_wr = entity_metadata_wrapper('node', $node);
+
+    // сформировать ссылку на страницу подробного описания
+    $node_url = url('node/' . $node->nid);
+
+    // наличие
+    $stock = $product_wr->status->value();
+
+    // изображение
+    $image_url = '/sites/default/files/default_images/no_image.jpg';
+    if ($image = $node_wr->field_pd_image->value()) {
+      $image_url = image_style_url('medium', $image['uri']);
+    }
+
+    // цена и скидка
+    $discount_percent = 0;
+    $commerce_price = $product_wr->commerce_price->value();
+    $price = commerce_currency_format($commerce_price['amount'], 'RUB');
+//    $discount_amount = 0;
+//    $base_amount = commerce_price_component_total($commerce_price, 'base_price')['amount'];
+//    foreach ($commerce_price['data']['components'] as $key => $component) {
+//      if (strpos($component['name'], 'discount|') === 0) {
+//        $discount_amount += $component['price']['amount'];
+//      }
+//    }
+//    $discount_percent = $base_amount ? floor($discount_amount / $base_amount * 100) : 0;
+
+    $result = [
+      'id' => $pid,
+      'title' => $node_wr->title->value(),
+      'tare' => $product_wr->field_p_tare->name->value(),
+      'tare_weight_arr' => physical_weight_convert($product_wr->field_p_tare->field_weight->value(), 'kg'),
+      'category' => $node_wr->field_pd_category[0]->name->value(),
+      'summary' => $node_wr->body->summary->value(),
+      'price_wo_format' => $commerce_price['amount']/100,
+      'price' => $price,
+      'discount_percent' => $discount_percent,
+      'node_url' => $node_url,
+      'image_uri' => $image['uri'],
+      'image_medium' => $image_url,
+      'stock' => $stock,
+    ];
+  }
+
+  return $result;
+}
+
+/**
+ * Получить id ноды или ноду по id привязанного commerce product
+ */
+function ext_commerce_get_product_display_by_product_id($product_id, $load_node = false)
+{
+  if ($product_id) {
+    $product_display_nid = db_select('field_data_field_product', 'f')
+      ->fields('f', array('entity_id'))
+      ->condition('f.field_product_product_id', $product_id)
+      ->range(0, 1)
+      ->execute()
+      ->fetchField();
+    return $load_node ? node_load($product_display_nid) : $product_display_nid;
+  }
+  return false;
+}
+
+/**
+ * Информация о commerce_line_item
+ * @param $line_item
+ *
+ * @return array
+ */
+function ext_commerce_get_line_item_info($line_item)
+{
+  $result = [];
+  $line_item_wr = entity_metadata_wrapper('commerce_line_item', $line_item);
+
+  if ($line_item_wr->value()) {
+    $pid = $line_item_wr->commerce_product->product_id->value();
+    $product_info = ext_commerce_product_get_info($pid);
+
+    // найти опции
+    $options = [];
+    foreach ((array) $line_item as $field_name => $field) {
+      if (strpos($field_name, '_option_') && $line_item_wr->{$field_name}->value()) {
+        $options[] = $line_item_wr->{$field_name}->info()['label'] . ': ' . $line_item_wr->{$field_name}->label();
+      }
+    }
+
+    $result = [
+      'product_info' => $product_info,
+      'qty' => (int)$line_item_wr->quantity->value(),
+      'qty_formatted' => (int)$line_item_wr->quantity->value() . ' шт.',
+      'total' => $line_item_wr->commerce_total->amount->value()/100,
+      'total_formatted' => commerce_currency_format($line_item_wr->commerce_total->amount->value(), 'RUB'),
+    ];
+  }
+  return $result;
+}
+
+

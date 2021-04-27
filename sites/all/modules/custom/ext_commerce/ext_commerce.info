@@ -1,0 +1,6 @@
+name = Ext Commerce
+description = Изменения, связанные с заказом
+version = 7.x-1.0
+core = 7.x
+package = Custom
+

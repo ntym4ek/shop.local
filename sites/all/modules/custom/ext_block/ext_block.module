@@ -1,0 +1,84 @@
+<?php
+
+/**
+ * Implements hook_block_info().
+ * Информация о блоке и дефолтные настройки.
+ */
+function ext_block_block_info()
+{
+  $blocks['front-advantages'] = array(
+    'info' => t('Advantages'),
+    'status' => TRUE,
+    'region' => 'content',
+    'visibility' => BLOCK_VISIBILITY_LISTED,
+    'pages' => '<front>',
+    'cache' => DRUPAL_CACHE_GLOBAL,
+  );
+  $blocks['front-contact'] = array(
+    'info' => 'Контакты на главной',
+    'status' => TRUE,
+    'region' => 'footer',
+    'visibility' => BLOCK_VISIBILITY_LISTED,
+    'pages' => '<front>',
+    'cache' => DRUPAL_CACHE_GLOBAL,
+  );
+
+  return $blocks;
+}
+
+/**
+ * Implements hook_block_view().
+ * Генерация заголовка блока и его контента.
+ */
+function ext_block_block_view($delta = '')
+{
+  $block = [];
+
+  if ($delta == 'front-advantages') {
+    $block['subject'] = '';
+    $block['content'] = '<div class="front-advantages">
+                          <h2>Забота о клиентах</h2>
+                          <div>
+                            <div>
+                              <div><img src="/sites/default/files/images/advantages/consulting.png" alt="Консультация агронома"><p>Консультация агронома</p></div>
+                              <div><img src="/sites/default/files/images/advantages/diagnosis.png" alt="Диагностика полей"><p>Диагностика полей</p></div>
+                              <div><img src="/sites/default/files/images/advantages/support.png" alt="Сопровождение культуры"><p>Сопровождение культуры</p></div>
+                            </div>
+                            <div>
+                              <div><img src="/sites/default/files/images/advantages/laboratory.png" alt="Лабораторные исследования"><p>Лабораторные исследования</p></div>
+                              <div><img src="/sites/default/files/images/advantages/keeping.png" alt="Ответственное хранение"><p>Ответственное хранение</p></div>
+                              <div><img src="/sites/default/files/images/advantages/delivery.png" alt="Доставка"><p>Доставка</p></div>
+                              </div>
+                          </div>
+                        </div>';
+  } elseif ($delta = 'front-contact') {
+    $block['subject'] = '';
+    $block['content'] = '<div class="front-contacts">
+                            <div class="c1"><img src="/sites/default/files/images/_dev/bg-contacts.png" alt=""></div>
+                            <div class="c2">
+                                <p>Узнать подробнее о препарате, получить рекомендации по использованию, ознакомится с испытаниями можно у регионального представителя или в центральном офисе</p>
+                                <p><b>td@kccc.ru</b><b>+8 (8332) 76-15-20</b></p>
+                                <a href="/" class="btn btn-primary btn-lg btn-wide">Выбрать представителя</a>
+                            </div>
+                        </div>';
+
+  }
+
+  return $block;
+}
+
+/**
+ * Implements hook_block_view_alter().
+ */
+function ext_block_block_view_alter(&$data, $block)
+{
+  if ($block->module == 'commerce_cart' &&  $block->delta == 'cart') {
+    $qty_html = '';
+    if ($order = commerce_cart_order_load($GLOBALS['user']->uid)) {
+      $order_info = ext_commerce_get_order_info($order);
+      $qty_html = $order_info['products']['qty_pcs'] ? '<span class="badge label-danger">' . $order_info['products']['qty_pcs'] . '</span>' : '';
+    }
+    $data["subject"] = '';
+    $data["content"] = '<a href="/checkout"><div><img src="/sites/all/themes/shop/images/cart.png" alt="корзина">' . $qty_html . '</div>Корзина</a>';
+  }
+}
